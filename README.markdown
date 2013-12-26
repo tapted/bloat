@@ -12,14 +12,14 @@ Generate [webtreemap][]-compatible JSON summaries of binary size.
 
 2) Build your binary with the `-g` flag to get symbols.
 
-3) Run `./bloat.py --help` and generate `nm.out` as instructed there.
+3) Run `./bloat.py --help` and generate `a.out.map` as instructed there.
 
 4) Example command line:
 
-        ./bloat.py --strip-prefix=/path/to/src syms > bloat.json
+    ./bloat.py syms --map-output ~/src/llvm-svn//tools/clang/cf.map  > bloat.json
 
 ## Misc other feature
 
 Dump large symbols:
 
-    $ ./bloat.py dump | head -20
+    ./bloat.py dump | head -20
