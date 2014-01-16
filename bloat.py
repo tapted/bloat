@@ -187,10 +187,12 @@ def parse_cpp_name(name, cppfilt):
         co = val.find('::')
         lt = val.find('<')
         pa = val.find('(')
+        sp = val.find(' ')
         co = len(val) if co == -1 else co
         lt = len(val) if lt == -1 else lt
         pa = len(val) if pa == -1 else pa
-        if co < lt and co < pa:
+        sp = len(val) if sp == -1 else sp
+        if co < lt and co < pa or (sp < lt and sp < co and sp < pa):
             # Namespace or type name.
             return (val[:co], val[co+2:])
         if lt < pa:
