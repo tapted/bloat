@@ -420,11 +420,11 @@ if mode == 'syms':
         res = subprocess.check_output([opts.cppfilt, 'main'])
         if res.strip() != 'main':
             print >>sys.stderr, ("%s failed demangling, "
-                                 "output won't be demangled." % opt.cppfilt)
+                                 "output won't be demangled." % opts.cppfilt)
             opts.cppfilt = None
     except:
         print >>sys.stderr, ("Could not find c++filt at %s, "
-                             "output won't be demangled." % opt.cppfilt)
+                             "output won't be demangled." % opts.cppfilt)
         opts.cppfilt = None
     dump_nm(nmfile, strip_prefix=opts.strip_prefix, cppfilt=opts.cppfilt)
 elif mode == 'sections':
