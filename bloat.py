@@ -201,6 +201,8 @@ def parse_cpp_name(name, cppfilt):
             gt = lt
             while val[gt] != '>' or open_tmpl != 0:
                 gt = gt + 1
+                if len(val) <= gt:
+                    return (val, '')
                 if val[gt] == '<':
                     open_tmpl = open_tmpl + 1
                 if val[gt] == '>':
