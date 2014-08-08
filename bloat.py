@@ -380,76 +380,76 @@ def dump_sections(objdump):
             'data': { '$area': size },
             'children': [ debug_sections, sections ]})
 
-
-usage="""%prog [options] MODE
-
-Modes are:
-  syms: output symbols json suitable for a treemap
-  dump: print symbols sorted by size (pipe to head for best output)
-  sections: output binary sections json suitable for a treemap
-
-nm output passed to --nm-output should from running a command
-like the following (note, can take a long time -- 30 minutes):
-  nm -C -S -l /path/to/binary > nm.out
-
-objdump output passed to --objdump-output should be from a command
-like:
-  objdump -h /path/to/binary > objdump.out"""
-parser = optparse.OptionParser(usage=usage)
-parser.add_option('--nm-output', action='store', dest='nmpath',
-                  metavar='PATH', default='nm.out',
-                  help='path to nm output [default=nm.out]')
-parser.add_option('--objdump-output', action='store', dest='objdumppath',
-                  metavar='PATH', default='objdump.out',
-                  help='path to objdump output [default=objdump.out]')
-parser.add_option('--strip-prefix', metavar='PATH', action='store',
-                  help='strip PATH prefix from paths; e.g. /path/to/src/root')
-parser.add_option('--filter', action='store',
-                  help='include only symbols/files matching FILTER')
-parser.add_option('--c++filt', action='store', metavar='PATH', dest='cppfilt',
-                  default='c++filt', help="Path to c++filt, used to demangle "
-                  "symbols that weren't handled by nm. Set to an invalid path "
-                  "to disable.")
-opts, args = parser.parse_args()
-
-if len(args) != 1:
-    parser.print_usage()
-    sys.exit(1)
-
-mode = args[0]
-if mode == 'syms':
-    nmfile = open(opts.nmpath, 'r')
-    try:
-        res = subprocess.check_output([opts.cppfilt, 'main'])
-        if res.strip() != 'main':
-            print >>sys.stderr, ("%s failed demangling, "
+if __name__ == "__main__":
+    usage="""%prog [options] MODE
+    
+    Modes are:
+      syms: output symbols json suitable for a treemap
+      dump: print symbols sorted by size (pipe to head for best output)
+      sections: output binary sections json suitable for a treemap
+    
+    nm output passed to --nm-output should from running a command
+    like the following (note, can take a long time -- 30 minutes):
+      nm -C -S -l /path/to/binary > nm.out
+    
+    objdump output passed to --objdump-output should be from a command
+    like:
+      objdump -h /path/to/binary > objdump.out"""
+    parser = optparse.OptionParser(usage=usage)
+    parser.add_option('--nm-output', action='store', dest='nmpath',
+                      metavar='PATH', default='nm.out',
+                      help='path to nm output [default=nm.out]')
+    parser.add_option('--objdump-output', action='store', dest='objdumppath',
+                      metavar='PATH', default='objdump.out',
+                      help='path to objdump output [default=objdump.out]')
+    parser.add_option('--strip-prefix', metavar='PATH', action='store',
+                      help='strip PATH prefix from paths; e.g. /path/to/src/root')
+    parser.add_option('--filter', action='store',
+                      help='include only symbols/files matching FILTER')
+    parser.add_option('--c++filt', action='store', metavar='PATH', dest='cppfilt',
+                      default='c++filt', help="Path to c++filt, used to demangle "
+                      "symbols that weren't handled by nm. Set to an invalid path "
+                      "to disable.")
+    opts, args = parser.parse_args()
+    
+    if len(args) != 1:
+        parser.print_usage()
+        sys.exit(1)
+    
+    mode = args[0]
+    if mode == 'syms':
+        nmfile = open(opts.nmpath, 'r')
+        try:
+            res = subprocess.check_output([opts.cppfilt, 'main'])
+            if res.strip() != 'main':
+                print >>sys.stderr, ("%s failed demangling, "
+                                     "output won't be demangled." % opts.cppfilt)
+                opts.cppfilt = None
+        except:
+            print >>sys.stderr, ("Could not find c++filt at %s, "
                                  "output won't be demangled." % opts.cppfilt)
             opts.cppfilt = None
-    except:
-        print >>sys.stderr, ("Could not find c++filt at %s, "
-                             "output won't be demangled." % opts.cppfilt)
-        opts.cppfilt = None
-    dump_nm(nmfile, strip_prefix=opts.strip_prefix, cppfilt=opts.cppfilt)
-elif mode == 'sections':
-    objdumpfile = open(opts.objdumppath, 'r')
-    dump_sections(objdumpfile)
-elif mode == 'dump':
-    nmfile = open(opts.nmpath, 'r')
-    syms = list(parse_nm(nmfile))
-    # a list of (sym, type, size, path); sort by size.
-    syms.sort(key=lambda x: -x[2])
-    total = 0
-    for sym, type, size, path in syms:
-        if type in ('b', 'w'):
-            continue  # skip bss and weak symbols
-        if path is None:
-            path = ''
-        if opts.filter and not (opts.filter in sym or opts.filter in path):
-            continue
-        print '%6s %s (%s) %s' % (format_bytes(size), sym,
-                                  symbol_type_to_human(type), path)
-        total += size
-    print '%6s %s' % (format_bytes(total), 'total'),
-else:
-    print 'unknown mode'
-    parser.print_usage()
+        dump_nm(nmfile, strip_prefix=opts.strip_prefix, cppfilt=opts.cppfilt)
+    elif mode == 'sections':
+        objdumpfile = open(opts.objdumppath, 'r')
+        dump_sections(objdumpfile)
+    elif mode == 'dump':
+        nmfile = open(opts.nmpath, 'r')
+        syms = list(parse_nm(nmfile))
+        # a list of (sym, type, size, path); sort by size.
+        syms.sort(key=lambda x: -x[2])
+        total = 0
+        for sym, type, size, path in syms:
+            if type in ('b', 'w'):
+                continue  # skip bss and weak symbols
+            if path is None:
+                path = ''
+            if opts.filter and not (opts.filter in sym or opts.filter in path):
+                continue
+            print '%6s %s (%s) %s' % (format_bytes(size), sym,
+                                      symbol_type_to_human(type), path)
+            total += size
+        print '%6s %s' % (format_bytes(total), 'total'),
+    else:
+        print 'unknown mode'
+        parser.print_usage()
