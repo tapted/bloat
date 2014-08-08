@@ -57,6 +57,7 @@ def symbol_type_to_human(type):
     return {
         'b': 'bss',
         'd': 'data',
+        'n': 'debugging symbol',
         'r': 'read-only data',
         't': 'code',
         'u': 'weak symbol', # Unique global.
