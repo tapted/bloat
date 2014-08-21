@@ -325,8 +325,7 @@ def jsonify_tree(tree, name):
 
 def dump_nm(nmfile, strip_prefix, cppfilt):
     dirs = treeify_syms(parse_nm(nmfile), strip_prefix, cppfilt)
-    print ('var kTree = ' +
-           json.dumps(jsonify_tree(dirs, '[everything]'), indent=2))
+    return 'var kTree = ' + json.dumps(jsonify_tree(dirs, '[everything]'), indent=2)
 
 
 def parse_objdump(input):
@@ -429,7 +428,7 @@ if __name__ == "__main__":
             print >>sys.stderr, ("Could not find c++filt at %s, "
                                  "output won't be demangled." % opts.cppfilt)
             opts.cppfilt = None
-        dump_nm(nmfile, strip_prefix=opts.strip_prefix, cppfilt=opts.cppfilt)
+        print dump_nm(nmfile, strip_prefix=opts.strip_prefix, cppfilt=opts.cppfilt)
     elif mode == 'sections':
         objdumpfile = open(opts.objdumppath, 'r')
         dump_sections(objdumpfile)
