@@ -14,18 +14,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import fileinput
 import operator
 import optparse
 import os
-import pprint
 import re
 import subprocess
 import sys
 import json
 
+
 ###################### HACK #####################
-if "check_output" not in dir( subprocess ): # duck punch it in!
+if "check_output" not in dir(subprocess): # duck punch it in!
     def f(*popenargs, **kwargs):
         if 'stdout' in kwargs:
             raise ValueError('stdout argument not allowed, it will be overridden.')
@@ -40,6 +39,41 @@ if "check_output" not in dir( subprocess ): # duck punch it in!
         return output
     subprocess.check_output = f
 ###################### HACK #####################
+
+
+class Suffix:
+    def __init__(self, suffix, replacement):
+        self.pattern = '^(.*)' + suffix + '(.*)$'
+        self.re = re.compile(self.pattern)
+        self.replacement = replacement
+
+class SuffixCleanup:
+    """Pre-compile suffix regular expressions."""
+    def __init__(self):
+        self.suffixes = [
+            Suffix('\.part\.([0-9]+)',      'part'),
+            Suffix('\.constprop\.([0-9]+)', 'constprop'),
+            Suffix('\.isra\.([0-9]+)',      'isra'),
+        ]
+
+    def cleanup(self, ident, cppfilt):
+        """Cleanup identifiers that have suffixes preventing demangling,
+           and demangle if possible."""
+        to_append = []
+        for s in self.suffixes:
+            found = s.re.match(ident)
+            if not found:
+                continue
+            to_append += [' [' + s.replacement + '.' + found.group(2) + ']']
+            ident = found.group(1) + found.group(3)
+        if len(to_append) > 0:
+            # Only try to demangle if there were suffixes.
+            ident = demangle(ident, cppfilt)
+        for s in to_append:
+            ident += s
+        return ident
+
+suffix_cleanup = SuffixCleanup()
 
 def format_bytes(bytes):
     """Pretty-print a number of bytes."""
@@ -66,12 +100,39 @@ def symbol_type_to_human(type):
         }[type]
 
 
-def parse_nm(input):
+def process_no_addres_match(match):
+    symbol_type, _ = match.groups()
+    if symbol_type in ('U', 'w'):
+        # external or weak symbol
+        return True
+
+
+def process_no_size_match(match):
+    '''
+    @author: rlmajewski
+    This function is here only to denote the fact that something can be done here
+    And that it has been refractorised
+    '''
+    symbol_type, sym = match.groups()[0:2]
+    return symbol_type, sym
+
+
+def process_full_match(match):
+    size, symbol_type, sym = match.groups()[0:3]
+    size = int(size, 16)
+    symbol_type = symbol_type.lower()
+    if symbol_type in ['u', 'v']:
+        symbol_type = 'w'
+    path = match.group(4)
+    return sym, symbol_type, size, path
+
+
+def parse_nm(input_iterable_nm, excluded_sym=None):
     """Parse nm output.
 
     Argument: an iterable over lines of nm output.
 
-    Yields: (symbol name, symbol type, symbol size, source file path).
+    Yields: (symbol name, symbol symbol_type, symbol size, source file path).
     Path may be None if nm couldn't figure out the source file.
     """
 
@@ -83,32 +144,21 @@ def parse_nm(input):
     # Match lines that don't have an address at all -- typically external symbols.
     noaddr_re = re.compile(r'^ + (.) (.*)$')
 
-    for line in input:
+    for line in input_iterable_nm:
         line = line.rstrip()
         match = sym_re.match(line)
         if match:
-            size, type, sym = match.groups()[0:3]
-            size = int(size, 16)
-            type = type.lower()
-            if type in ['u', 'v']:
-                type = 'w'  # just call them all weak
-            if type == 'b':
-                continue  # skip all BSS for now
-            path = match.group(4)
-            yield sym, type, size, path
+            (sym, symbol_type, size, path) = process_full_match(match)
+            if not (symbol_type in excluded_sym.lower()):
+                yield (sym, symbol_type, size, path)
             continue
         match = addr_re.match(line)
         if match:
-            type, sym = match.groups()[0:2]
-            # No size == we don't care.
+            process_no_size_match(match)
             continue
         match = noaddr_re.match(line)
-        if match:
-            type, sym = match.groups()
-            if type in ('U', 'w'):
-                # external or weak symbol
-                continue
-
+        if match and process_no_addres_match(match):
+            continue
         print >>sys.stderr, 'unparsed:', repr(line)
 
 def demangle(ident, cppfilt):
@@ -118,38 +168,7 @@ def demangle(ident, cppfilt):
     return ident
 
 
-class Suffix:
-    def __init__(self, suffix, replacement):
-        self.pattern = '^(.*)' + suffix + '(.*)$'
-        self.re = re.compile(self.pattern)
-        self.replacement = replacement
 
-class SuffixCleanup:
-    """Pre-compile suffix regular expressions."""
-    def __init__(self):
-        self.suffixes = [
-            Suffix('\.part\.([0-9]+)',      'part'),
-            Suffix('\.constprop\.([0-9]+)', 'constprop'),
-            Suffix('\.isra\.([0-9]+)',      'isra'),
-        ]
-    def cleanup(self, ident, cppfilt):
-        """Cleanup identifiers that have suffixes preventing demangling,
-           and demangle if possible."""
-        to_append = []
-        for s in self.suffixes:
-            found = s.re.match(ident)
-            if not found:
-                continue
-            to_append += [' [' + s.replacement + '.' + found.group(2) + ']']
-            ident = found.group(1) + found.group(3)
-        if len(to_append) > 0:
-            # Only try to demangle if there were suffixes.
-            ident = demangle(ident, cppfilt)
-        for s in to_append:
-            ident += s
-        return ident
-
-suffix_cleanup = SuffixCleanup()
 
 def parse_cpp_name(name, cppfilt):
     name = suffix_cleanup.cleanup(name, cppfilt)
@@ -181,8 +200,7 @@ def parse_cpp_name(name, cppfilt):
 
     def parse_one(val):
         """Returns (leftmost-part, remaining)."""
-        if (val.startswith('operator') and
-            not (val[8].isalnum() or val[8] == '_')):
+        if (val.startswith('operator') and not (val[8].isalnum() or val[8] == '_')):
             # Operator overload function, terminate.
             return (val, '')
         co = val.find('::')
@@ -323,8 +341,9 @@ def jsonify_tree(tree, name):
         }
 
 
-def dump_nm(nmfile, strip_prefix, cppfilt):
-    dirs = treeify_syms(parse_nm(nmfile), strip_prefix, cppfilt)
+def dump_nm(nmfile, strip_prefix, cppfilt, excluded_sym):
+    parsed_nm_list = parse_nm(nmfile, excluded_sym=excluded_sym)
+    dirs = treeify_syms(parsed_nm_list, strip_prefix, cppfilt)
     return 'var kTree = ' + json.dumps(jsonify_tree(dirs, '[everything]'), indent=2)
 
 
@@ -380,17 +399,17 @@ def dump_sections(objdump):
             'children': [ debug_sections, sections ]})
 
 if __name__ == "__main__":
-    usage="""%prog [options] MODE
-    
+    usage = """%prog [options] MODE
+
     Modes are:
       syms: output symbols json suitable for a treemap
       dump: print symbols sorted by size (pipe to head for best output)
       sections: output binary sections json suitable for a treemap
-    
+
     nm output passed to --nm-output should from running a command
     like the following (note, can take a long time -- 30 minutes):
       nm -C -S -l /path/to/binary > nm.out
-    
+
     objdump output passed to --objdump-output should be from a command
     like:
       objdump -h /path/to/binary > objdump.out"""
@@ -409,12 +428,15 @@ if __name__ == "__main__":
                       default='c++filt', help="Path to c++filt, used to demangle "
                       "symbols that weren't handled by nm. Set to an invalid path "
                       "to disable.")
+    parser.add_option('--exclude_sym', action='store', dest='excludesymlist', type="string",
+                      default="", help="list of symbols to exclude while making json"
+                      "e.g. --eclude-sym=bTw")
     opts, args = parser.parse_args()
-    
+
     if len(args) != 1:
         parser.print_usage()
         sys.exit(1)
-    
+
     mode = args[0]
     if mode == 'syms':
         nmfile = open(opts.nmpath, 'r')
@@ -428,7 +450,7 @@ if __name__ == "__main__":
             print >>sys.stderr, ("Could not find c++filt at %s, "
                                  "output won't be demangled." % opts.cppfilt)
             opts.cppfilt = None
-        print dump_nm(nmfile, strip_prefix=opts.strip_prefix, cppfilt=opts.cppfilt)
+        print dump_nm(nmfile, strip_prefix=opts.strip_prefix, cppfilt=opts.cppfilt, excluded_sym=opts.excludesymlist)
     elif mode == 'sections':
         objdumpfile = open(opts.objdumppath, 'r')
         dump_sections(objdumpfile)
