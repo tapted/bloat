@@ -428,9 +428,10 @@ if __name__ == "__main__":
                       default='c++filt', help="Path to c++filt, used to demangle "
                       "symbols that weren't handled by nm. Set to an invalid path "
                       "to disable.")
-    parser.add_option('--exclude_sym', action='store', dest='excludesymlist', type="string",
+    parser.add_option('--exclude-sym', action='store', dest='excludesymlist', type="string",
                       default="", help="list of symbols to exclude while making json"
-                      "e.g. --eclude-sym=bTw")
+                      "for list of symbols check your nm specification ( https://sourceware.org/binutils/docs-2.17/binutils/nm.html )"
+                      "e.g. --exclude-sym=bTw")
     opts, args = parser.parse_args()
 
     if len(args) != 1:
