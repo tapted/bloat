@@ -183,6 +183,9 @@ def parse_cpp_name(name, cppfilt):
             not (val[8].isalnum() or val[8] == '_')):
             # Operator overload function, terminate.
             return (val, '')
+        if (val.startswith('-[') or val.startswith('+[')):
+            # Objective C method
+            return (val, '')
         co = val.find('::')
         lt = val.find('<')
         pa = val.find('(')
