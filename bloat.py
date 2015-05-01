@@ -130,19 +130,23 @@ def process_full_match(match):
 def parse_nm(input_iterable_nm, excluded_sym=None):
     """Parse nm output.
 
-    Argument: an iterable over lines of nm output.
+    Argument: an iterable over lines of ld64's -map output.
 
     Yields: (symbol name, symbol symbol_type, symbol size, source file path).
     Path may be None if nm couldn't figure out the source file.
     """
 
-    # Match lines with size + symbol + optional filename.
-    sym_re = re.compile(r'^[0-9a-f]+ ([0-9a-f]+) (.) ([^\t]+)(?:\t(.*):\d+)?$')
+    START, OBJFILES, SECTIONS, SYMBOLS = range(4)
+    mode = START
 
-    # Match lines with addr but no size.
-    addr_re = re.compile(r'^[0-9a-f]+ (.) ([^\t]+)(?:\t.*)?$')
-    # Match lines that don't have an address at all -- typically external symbols.
-    noaddr_re = re.compile(r'^ + (.) (.*)$')
+    objfiles = []
+    # matches:
+    #   [  1] /Volumes/MacintoshHD2/../ang-format/Release+Asserts/ClangFormat.o
+    obj_re = re.compile(r'^\[\s*(\d+)\] (.+)$')
+
+    # matches:
+    #   0x100000EA0 0x000015B7  [  1] __ZN5cl....N4llvm9StringRefE
+    sym_re = re.compile(r'^(0x[0-9A-F]+)\t(0x[0-9A-F]+)\t\[\s*(\d+)\] (.+)$')
 
     for line in input_iterable_nm:
         line = line.rstrip()
@@ -161,9 +165,70 @@ def parse_nm(input_iterable_nm, excluded_sym=None):
             continue
         print >>sys.stderr, 'unparsed:', repr(line)
 
+def parse_map(input):
+    """Parse ld64 -map output.
+
+    Argument: an iterable over lines of ld64's -map output.
+
+    Yields: (symbol name, symbol type, symbol size, source file path).
+    Path may be None if we couldn't figure out the source file.
+    """
+
+    START, OBJFILES, SECTIONS, SYMBOLS = range(4)
+    mode = START
+
+    objfiles = []
+    # matches:
+    #   [  1] /Volumes/MacintoshHD2/../ang-format/Release+Asserts/ClangFormat.o
+    obj_re = re.compile(r'^\[\s*(\d+)\] (.+)$')
+
+    # matches:
+    #   0x100000EA0 0x000015B7  [  1] __ZN5cl....N4llvm9StringRefE
+    sym_re = re.compile(r'^(0x[0-9A-F]+)\t(0x[0-9A-F]+)\t\[\s*(\d+)\] (.+)$')
+
+    for line in input_iterable_nm:
+        line = line.rstrip()
+        if line == '# Object files:':
+          mode = OBJFILES
+          continue
+        if line == '# Sections:':
+          mode = SECTIONS
+          continue
+        if line == '# Symbols:':
+          mode = SYMBOLS
+          continue
+        if line.startswith('#'):
+          if line.endswith(':'):
+            raise Exception('Unknown section "%s"' % line)
+          continue  # Ignore comments.
+
+        if mode == OBJFILES:
+          match = obj_re.match(line)
+          if match:
+            index, path = match.groups()
+            index = int(index)
+            assert index == len(objfiles), '%d vs %d' % (index, len(objfiles))
+            objfiles.append(path)
+            continue
+        elif mode == SECTIONS:
+          continue
+        elif mode == SYMBOLS:
+          match = sym_re.match(line)
+          if match:
+            start, size, file_index, sym = match.groups()
+            start = int(start, 16)
+            size = int(size, 16)
+            file_index = int(file_index)
+            path = objfiles[file_index]
+            yield sym, 't', size, path
+            continue
+
+        print >>sys.stderr, 'unparsed:', repr(line)
+
+
 def demangle(ident, cppfilt):
-    if cppfilt and ident.startswith('_Z'):
-        # Demangle names when possible. Mangled names all start with _Z.
+    if cppfilt and ident.startswith('__Z'):
+        # Demangle names when possible. Mangled names all start with __Z.
         ident = subprocess.check_output([cppfilt, ident]).strip()
     return ident
 
@@ -202,6 +267,9 @@ def parse_cpp_name(name, cppfilt):
         """Returns (leftmost-part, remaining)."""
         if (val.startswith('operator') and not (val[8].isalnum() or val[8] == '_')):
             # Operator overload function, terminate.
+            return (val, '')
+        if (val.startswith('-[') or val.startswith('+[')):
+            # Objective C method
             return (val, '')
         co = val.find('::')
         lt = val.find('<')
@@ -255,7 +323,12 @@ def treeify_syms(symbols, strip_prefix=None, cppfilt=None):
                 path = path[1:]
             path = ['[path]'] + path.split('/')
 
-        parts = parse_cpp_name(sym, cppfilt)
+        if sym.startswith('literal string: '):
+          parts = sym.split(':', 1)
+          parts[1] = repr(parts[1])
+        else:
+          sym = demangle(sym, cppfilt)
+          parts = parse_cpp_name(sym, cppfilt)
         if len(parts) == 1:
           if path:
             # No namespaces, group with path.
@@ -340,13 +413,6 @@ def jsonify_tree(tree, name):
         'children': children,
         }
 
-
-def dump_nm(nmfile, strip_prefix, cppfilt, excluded_sym):
-    parsed_nm_list = parse_nm(nmfile, excluded_sym=excluded_sym)
-    dirs = treeify_syms(parsed_nm_list, strip_prefix, cppfilt)
-    return 'var kTree = ' + json.dumps(jsonify_tree(dirs, '[everything]'), indent=2)
-
-
 def parse_objdump(input):
     """Parse objdump -h output."""
     sec_re = re.compile('^\d+ (\S+) +([0-9a-z]+)')
@@ -398,79 +464,95 @@ def dump_sections(objdump):
             'data': { '$area': size },
             'children': [ debug_sections, sections ]})
 
-usage = """%prog [options] MODE
+def dump_nm(nmfile, strip_prefix, cppfilt, excluded_sym):
+    parsed_nm_list = parse_nm(nmfile, excluded_sym=excluded_sym)
+    dirs = treeify_syms(parsed_nm_list, strip_prefix, cppfilt)
+    return 'var kTree = ' + json.dumps(jsonify_tree(dirs, '[everything]'), indent=2)
 
-Modes are:
-  syms: output symbols json suitable for a treemap
-  dump: print symbols sorted by size (pipe to head for best output)
-  sections: output binary sections json suitable for a treemap
+def dump_map(mapfile, strip_prefix, cppfilt):
+    dirs = treeify_syms(parse_map(mapfile), strip_prefix, cppfilt)
+    print ('var kTree = ' +
+           json.dumps(jsonify_tree(dirs, '[everything]'), indent=2))
 
-nm output passed to --nm-output should from running a command
-like the following (note, can take a long time -- 30 minutes):
-  nm -C -S -l /path/to/binary > nm.out
 
-objdump output passed to --objdump-output should be from a command
-like:
-  objdump -h /path/to/binary > objdump.out"""
-parser = optparse.OptionParser(usage=usage)
-parser.add_option('--nm-output', action='store', dest='nmpath',
-                  metavar='PATH', default='nm.out',
-                  help='path to nm output [default=nm.out]')
-parser.add_option('--objdump-output', action='store', dest='objdumppath',
-                  metavar='PATH', default='objdump.out',
-                  help='path to objdump output [default=objdump.out]')
-parser.add_option('--strip-prefix', metavar='PATH', action='store',
-                  help='strip PATH prefix from paths; e.g. /path/to/src/root')
-parser.add_option('--filter', action='store',
-                  help='include only symbols/files matching FILTER')
-parser.add_option('--c++filt', action='store', metavar='PATH', dest='cppfilt',
-                  default='c++filt', help="Path to c++filt, used to demangle "
-                  "symbols that weren't handled by nm. Set to an invalid path "
-                  "to disable.")
-parser.add_option('--exclude-sym', action='store', dest='excludesymlist', type="string",
-                  default="", help="list of symbols to exclude while making json"
-                  "for list of symbols check your nm specification ( https://sourceware.org/binutils/docs-2.17/binutils/nm.html )"
-                  "e.g. --exclude-sym=bTw")
-opts, args = parser.parse_args()
+if __name__ == "__main__":
+    usage="""%prog [options] MODE
 
-if len(args) != 1:
-    parser.print_usage()
-    sys.exit(1)
+    Modes are:
+      syms: output symbols json suitable for a treemap
+      dump: print symbols sorted by size (pipe to head for best output)
 
-mode = args[0]
-if mode == 'syms':
-    nmfile = open(opts.nmpath, 'r')
-    try:
-        res = subprocess.check_output([opts.cppfilt, 'main'])
-        if res.strip() != 'main':
-            print >>sys.stderr, ("%s failed demangling, "
+    ld64 -map output passed to the linker:
+      ld64 -o /path/to/binary *.o -Wl,-map,a.out.map"""
+    parser = optparse.OptionParser(usage=usage)
+    parser.add_option('--map-output', action='store', dest='mappath',
+                      metavar='PATH', default='a.out.map',
+                      help='path to ld64 -map output [default=a.out.map]')
+    parser.add_option('--strip-prefix', metavar='PATH', action='store',
+                      help='strip PATH prefix from paths; e.g. /path/to/src/root')
+    parser.add_option('--filter', action='store',
+                      help='include only symbols/files matching FILTER')
+    parser.add_option('--c++filt', action='store', metavar='PATH', dest='cppfilt',
+                      default='c++filt', help="Path to c++filt, used to demangle "
+                      "symbols that weren't handled by nm. Set to an invalid path "
+                      "to disable.")
+    parser.add_option('--exclude-sym', action='store', dest='excludesymlist', type="string",
+                      default="", help="list of symbols to exclude while making json"
+                      "for list of symbols check your nm specification ( https://sourceware.org/binutils/docs-2.17/binutils/nm.html )"
+                      "e.g. --exclude-sym=bTw")
+    opts, args = parser.parse_args()
+
+    if len(args) != 1:
+        parser.print_usage()
+        sys.exit(1)
+
+    mode = args[0]
+    if mode == 'nmsyms':
+        mapfile = open(opts.mappath, 'r')
+        try:
+            res = subprocess.check_output([opts.cppfilt, 'main'])
+            if res.strip() != 'main':
+                print >>sys.stderr, ("%s failed demangling, "
+                                     "output won't be demangled." % opts.cppfilt)
+                opts.cppfilt = None
+        except:
+            print >>sys.stderr, ("Could not find c++filt at %s, "
                                  "output won't be demangled." % opts.cppfilt)
             opts.cppfilt = None
-    except:
-        print >>sys.stderr, ("Could not find c++filt at %s, "
-                             "output won't be demangled." % opts.cppfilt)
-        opts.cppfilt = None
-    print dump_nm(nmfile, strip_prefix=opts.strip_prefix, cppfilt=opts.cppfilt, excluded_sym=opts.excludesymlist)
-elif mode == 'sections':
-    objdumpfile = open(opts.objdumppath, 'r')
-    dump_sections(objdumpfile)
-elif mode == 'dump':
-    nmfile = open(opts.nmpath, 'r')
-    syms = list(parse_nm(nmfile))
-    # a list of (sym, type, size, path); sort by size.
-    syms.sort(key=lambda x: -x[2])
-    total = 0
-    for sym, type, size, path in syms:
-        if type in ('b', 'w'):
-            continue  # skip bss and weak symbols
-        if path is None:
-            path = ''
-        if opts.filter and not (opts.filter in sym or opts.filter in path):
-            continue
-        print '%6s %s (%s) %s' % (format_bytes(size), sym,
-                                  symbol_type_to_human(type), path)
-        total += size
-    print '%6s %s' % (format_bytes(total), 'total'),
-else:
-    print 'unknown mode'
-    parser.print_usage()
+        print dump_nm(nmfile, strip_prefix=opts.strip_prefix, cppfilt=opts.cppfilt, excluded_sym=opts.excludesymlist)
+    elif mode == 'mapsyms':
+        mapfile = open(opts.mappath, 'r')
+        try:
+            res = subprocess.check_output([opts.cppfilt, 'main'])
+            if res.strip() != 'main':
+                print >>sys.stderr, ("%s failed demangling, "
+                                     "output won't be demangled." % opts.cppfilt)
+                opts.cppfilt = None
+        except:
+            print >>sys.stderr, ("Could not find c++filt at %s, "
+                                 "output won't be demangled." % opts.cppfilt)
+            opts.cppfilt = None
+        dump_map(mapfile, strip_prefix=opts.strip_prefix, cppfilt=opts.cppfilt)
+    elif mode == 'sections':
+        objdumpfile = open(opts.objdumppath, 'r')
+        dump_sections(objdumpfile)
+    elif mode == 'dump':
+        mapfile = open(opts.mappath, 'r')
+        syms = list(parse_map(mapfile))
+        # a list of (sym, type, size, path); sort by size.
+        syms.sort(key=lambda x: -x[2])
+        total = 0
+        for sym, type, size, path in syms:
+            if type in ('b', 'w'):
+                continue  # skip bss and weak symbols
+            if path is None:
+                path = ''
+            if opts.filter and not (opts.filter in sym or opts.filter in path):
+                continue
+            print '%6s %s (%s) %s' % (format_bytes(size), sym,
+                                      symbol_type_to_human(type), path)
+            total += size
+        print '%6s %s' % (format_bytes(total), 'total'),
+    else:
+        print 'unknown mode'
+        parser.print_usage()
